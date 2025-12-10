@@ -31,8 +31,9 @@ async def run_evaluation():
     """Run system evaluation."""
     import yaml
     from dotenv import load_dotenv
-    from src.autogen_orchestrator import AutoGenOrchestrator
-    
+    from src.langgraph_orchestrator import LangGraphOrchestrator
+    from src.evaluation.evaluator import SystemEvaluator
+
     # Load environment variables
     load_dotenv()
 
@@ -40,32 +41,27 @@ async def run_evaluation():
     with open("config.yaml", 'r') as f:
         config = yaml.safe_load(f)
 
-    # Initialize AutoGen orchestrator
-    print("Initializing AutoGen orchestrator...")
-    orchestrator = AutoGenOrchestrator(config)
-    
-    # For now, run a simple test query
-    # TODO: Integrate with SystemEvaluator for full evaluation
+    # Initialize LangGraph orchestrator (more reliable than AutoGen)
+    print("Initializing LangGraph orchestrator...")
+    orchestrator = LangGraphOrchestrator(config)
+
+    print("Running evaluation on configured test queries...")
+    evaluator = SystemEvaluator(config, orchestrator=orchestrator)
+    report = await evaluator.evaluate_system()
+
     print("\n" + "=" * 70)
-    print("RUNNING TEST QUERY")
+    print("EVALUATION SUMMARY")
     print("=" * 70)
-    
-    test_query = "What are the key principles of accessible user interface design?"
-    print(f"\nQuery: {test_query}\n")
-    
-    result = orchestrator.process_query(test_query)
-    
-    print("\n" + "=" * 70)
-    print("RESULTS")
-    print("=" * 70)
-    print(f"\nResponse:\n{result.get('response', 'No response generated')}")
-    print(f"\nMetadata:")
-    print(f"  - Messages: {result.get('metadata', {}).get('num_messages', 0)}")
-    print(f"  - Sources: {result.get('metadata', {}).get('num_sources', 0)}")
-    
-    print("\n" + "=" * 70)
-    print("Note: Full evaluation with SystemEvaluator can be implemented")
-    print("=" * 70)
+    summary = report.get("summary", {})
+    scores = report.get("scores", {})
+    print(f"Total Queries: {summary.get('total_queries', 0)}")
+    print(f"Successful: {summary.get('successful', 0)} | Failed: {summary.get('failed', 0)}")
+    print(f"Success Rate: {summary.get('success_rate', 0.0):.2%}")
+    print(f"Overall Average Score: {scores.get('overall_average', 0.0):.3f}")
+
+    best = report.get("best_result")
+    if best:
+        print(f"Best Query: {best.get('query', '')} (Score: {best.get('score', 0.0):.3f})")
 
 
 def run_autogen():

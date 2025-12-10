@@ -19,7 +19,11 @@ from datetime import datetime
 from typing import Dict, Any
 from dotenv import load_dotenv
 
-from src.autogen_orchestrator import AutoGenOrchestrator
+# Use LangGraph orchestrator (works reliably with explicit workflow control)
+from src.langgraph_orchestrator import LangGraphOrchestrator as Orchestrator
+
+# AutoGen implementation also available
+# from src.autogen_orchestrator import AutoGenOrchestrator as Orchestrator
 
 # Load environment variables
 load_dotenv()
@@ -41,9 +45,9 @@ def initialize_session_state():
 
     if 'orchestrator' not in st.session_state:
         config = load_config()
-        # Initialize AutoGen orchestrator
+        # Initialize orchestrator (LangGraph by default)
         try:
-            st.session_state.orchestrator = AutoGenOrchestrator(config)
+            st.session_state.orchestrator = Orchestrator(config)
         except Exception as e:
             st.error(f"Failed to initialize orchestrator: {e}")
             st.session_state.orchestrator = None
@@ -183,11 +187,6 @@ def display_response(result: Dict[str, Any]):
     """
     Display query response.
 
-    TODO: YOUR CODE HERE
-    - Format response nicely
-    - Show citations with links
-    - Display sources
-    - Show safety events if any
     """
     # Check for errors
     if "error" in result:
@@ -199,6 +198,14 @@ def display_response(result: Dict[str, Any]):
     response = result.get("response", "")
     st.markdown(response)
 
+    # Safety status banner
+    metadata = result.get("metadata", {})
+    safety_action = metadata.get("safety_action")
+    if safety_action:
+        sanitized = metadata.get("safety_sanitized", False)
+        label = "Sanitized" if sanitized else "Refused"
+        st.warning(f"Safety action: {label} (policy: {safety_action})")
+
     # Display citations
     citations = result.get("citations", [])
     if citations:
@@ -208,13 +215,15 @@ def display_response(result: Dict[str, Any]):
 
     # Display metadata
     metadata = result.get("metadata", {})
-
     col1, col2 = st.columns(2)
     with col1:
         st.metric("Sources Used", metadata.get("num_sources", 0))
     with col2:
         score = metadata.get("critique_score", 0)
         st.metric("Quality Score", f"{score:.2f}")
+
+    if metadata.get("last_agent"):
+        st.info(f"Last agent to speak: {metadata.get('last_agent')}")
 
     # Safety events
     safety_events = metadata.get("safety_events", [])
@@ -223,9 +232,12 @@ def display_response(result: Dict[str, Any]):
             for event in safety_events:
                 event_type = event.get("type", "unknown")
                 violations = event.get("violations", [])
-                st.warning(f"{event_type.upper()}: {len(violations)} violation(s) detected")
+                status = "safe" if event.get("safe", True) else "blocked"
+                st.warning(f"{event_type.upper()} ({status}) • {len(violations)} violation(s)")
                 for violation in violations:
-                    st.text(f"  • {violation.get('reason', 'Unknown')}")
+                    category = violation.get("category", violation.get("validator", "Unknown"))
+                    reason = violation.get("reason", violation.get("validator", "Unknown"))
+                    st.text(f"  • {reason} (category: {category}, severity: {violation.get('severity', 'n/a')})")
 
     # Agent traces
     if st.session_state.show_traces:
@@ -238,10 +250,6 @@ def display_agent_traces(traces: Dict[str, Any]):
     """
     Display agent execution traces.
 
-    TODO: YOUR CODE HERE
-    - Format traces nicely
-    - Show agent workflow
-    - Display timing information
     """
     with st.expander("🔍 Agent Traces", expanded=False):
         for agent_name, actions in traces.items():
@@ -273,9 +281,10 @@ def display_sidebar():
 
         st.title("📊 Statistics")
 
-        # TODO: Get actual statistics
-        st.metric("Total Queries", len(st.session_state.history))
-        st.metric("Safety Events", 0)  # TODO: Get from safety manager
+        total_queries = len(st.session_state.history)
+        total_safety_events = sum(len(item.get("result", {}).get("metadata", {}).get("safety_events", [])) for item in st.session_state.history)
+        st.metric("Total Queries", total_queries)
+        st.metric("Safety Events", total_safety_events)
 
         st.divider()
 
@@ -386,6 +395,19 @@ def main():
         4. **Critic** verifies quality
         5. **Safety** checks ensure appropriate content
         """)
+
+        st.divider()
+        # Agent status snapshot
+        if st.session_state.history:
+            latest = st.session_state.history[-1].get("result", {})
+            last_agent = latest.get("metadata", {}).get("last_agent")
+            safety_action = latest.get("metadata", {}).get("safety_action")
+            if last_agent:
+                st.info(f"Last agent: {last_agent}")
+            if safety_action:
+                sanitized = latest.get("metadata", {}).get("safety_sanitized", False)
+                label = "Sanitized" if sanitized else "Refused"
+                st.warning(f"Latest response status: {label} (policy: {safety_action})")
 
     # Safety log (if enabled)
     if st.session_state.show_safety_log:

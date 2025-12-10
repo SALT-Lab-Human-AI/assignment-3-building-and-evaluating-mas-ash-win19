@@ -18,6 +18,8 @@ from autogen_agentchat.teams import RoundRobinGroupChat
 from autogen_agentchat.messages import TextMessage
 
 from src.agents.autogen_agents import create_research_team
+from src.guardrails.safety_manager import SafetyManager
+import re
 
 
 class AutoGenOrchestrator:
@@ -38,6 +40,11 @@ class AutoGenOrchestrator:
         """
         self.config = config
         self.logger = logging.getLogger("autogen_orchestrator")
+        safety_config = config.get("safety", {}).copy()
+        # pass through logging/system metadata for guardrails
+        safety_config["logging"] = config.get("logging", {})
+        safety_config["system"] = config.get("system", {})
+        self.safety_manager = SafetyManager(safety_config)
         
         # Create the research team
         self.logger.info("Creating research team...")
@@ -64,8 +71,30 @@ class AutoGenOrchestrator:
             - metadata: Additional information about the process
         """
         self.logger.info(f"Processing query: {query}")
+        # Reset safety log per query
+        self.safety_manager.clear_events()
         
         try:
+            # Input safety check
+            input_safety = self.safety_manager.check_input_safety(query)
+            if not input_safety.get("safe", True):
+                refusal_message = self.config.get("safety", {}).get("on_violation", {}).get(
+                    "message",
+                    "Request blocked due to safety policies."
+                )
+                return {
+                    "query": query,
+                    "response": refusal_message,
+                    "conversation_history": [],
+                    "metadata": {
+                        "error": False,
+                        "safety_events": self.safety_manager.get_safety_events(),
+                        "agents_involved": [],
+                    }
+                }
+
+            sanitized_query = input_safety.get("sanitized_query", query)
+
             # Run the async query processing
             loop = asyncio.get_event_loop()
             if loop.is_running():
@@ -74,10 +103,20 @@ class AutoGenOrchestrator:
                 with concurrent.futures.ThreadPoolExecutor() as pool:
                     result = pool.submit(
                         asyncio.run, 
-                        self._process_query_async(query, max_rounds)
+                        self._process_query_async(sanitized_query, max_rounds)
                     ).result()
             else:
-                result = loop.run_until_complete(self._process_query_async(query, max_rounds))
+                result = loop.run_until_complete(self._process_query_async(sanitized_query, max_rounds))
+            
+            # Output safety check
+            output_safety = self.safety_manager.check_output_safety(result.get("response", ""))
+            result.setdefault("metadata", {})
+            result["metadata"]["safety_events"] = self.safety_manager.get_safety_events()
+            if not output_safety.get("safe", True):
+                result["response"] = output_safety.get("response", result.get("response", ""))
+                result["metadata"]["safety_violations"] = output_safety.get("violations", [])
+                result["metadata"]["safety_action"] = output_safety.get("action_taken", "refuse")
+                result["metadata"]["safety_sanitized"] = output_safety.get("sanitized", False)
             
             self.logger.info("Query processing complete")
             return result
@@ -89,7 +128,10 @@ class AutoGenOrchestrator:
                 "error": str(e),
                 "response": f"An error occurred while processing your query: {str(e)}",
                 "conversation_history": [],
-                "metadata": {"error": True}
+                "metadata": {
+                    "error": True,
+                    "safety_events": self.safety_manager.get_safety_events()
+                }
             }
     
     async def _process_query_async(self, query: str, max_rounds: int = 20) -> Dict[str, Any]:
@@ -107,22 +149,32 @@ class AutoGenOrchestrator:
         task_message = f"""Research Query: {query}
 
 Please work together to answer this query comprehensively:
-1. Planner: Create a research plan
-2. Researcher: Gather evidence from web and academic sources
-3. Writer: Synthesize findings into a well-cited response
-4. Critic: Evaluate the quality and provide feedback"""
+1. Planner: Create a research plan (respond once with numbered steps and hand off).
+2. Researcher: Use web_search/paper_search tools; include URLs and short notes per source. If tools fail or are unavailable, state that explicitly and continue with available information. End with "RESEARCH COMPLETE".
+3. Writer: Synthesize findings with inline citations and references. End with "DRAFT COMPLETE".
+4. Critic: Evaluate quality and either say "TERMINATE" if acceptable or give concrete revisions."""
         
         # Run the team
         result = await self.team.run(task=task_message)
         
         # Extract conversation history
         messages = []
-        async for message in result.messages:
-            msg_dict = {
-                "source": message.source,
-                "content": message.content if hasattr(message, 'content') else str(message),
-            }
-            messages.append(msg_dict)
+        raw_messages = getattr(result, "messages", result)
+        # Handle both async iterables and plain lists
+        if hasattr(raw_messages, "__aiter__"):
+            async for message in raw_messages:
+                msg_dict = {
+                    "source": message.source,
+                    "content": message.content if hasattr(message, "content") else str(message),
+                }
+                messages.append(msg_dict)
+        else:
+            for message in raw_messages:
+                msg_dict = {
+                    "source": getattr(message, "source", "Unknown"),
+                    "content": message.content if hasattr(message, "content") else str(message),
+                }
+                messages.append(msg_dict)
         
         # Extract final response
         final_response = ""
@@ -155,19 +207,26 @@ Please work together to answer this query comprehensively:
         research_findings = []
         plan = ""
         critique = ""
+        citations = []
+        last_agent = ""
         
         for msg in messages:
             source = msg.get("source", "")
             content = msg.get("content", "")
+            last_agent = source or last_agent
             
             if source == "Planner" and not plan:
                 plan = content
             
             elif source == "Researcher":
                 research_findings.append(content)
+                citations.extend(self._extract_citations(content))
             
             elif source == "Critic":
                 critique = content
+                citations.extend(self._extract_citations(content))
+            elif source == "Writer":
+                citations.extend(self._extract_citations(content))
         
         # Count sources mentioned in research
         num_sources = 0
@@ -189,9 +248,24 @@ Please work together to answer this query comprehensively:
                 "plan": plan,
                 "research_findings": research_findings,
                 "critique": critique,
+                "citations": citations[:20],
                 "agents_involved": list(set([msg.get("source", "") for msg in messages])),
+                "last_agent": last_agent,
             }
         }
+
+    def _extract_citations(self, text: str) -> List[str]:
+        """
+        Extract citations/URLs from a block of text.
+        """
+        citations = []
+        # URLs
+        urls = re.findall(r'https?://[^\s<>"{}|\\^`\\[\\]]+', text)
+        citations.extend(urls)
+        # [Source: ...] patterns
+        source_tags = re.findall(r'\\[Source: ([^\\]]+)\\]', text)
+        citations.extend(source_tags)
+        return list(dict.fromkeys(citations))  # preserve order, dedupe
 
     def get_agent_descriptions(self) -> Dict[str, str]:
         """
@@ -298,4 +372,3 @@ if __name__ == "__main__":
     )
     
     demonstrate_usage()
-

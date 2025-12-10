@@ -155,8 +155,9 @@ You have access to tools for web search and paper search. When conducting resear
 1. Use both web search and paper search for comprehensive coverage
 2. Look for recent, high-quality sources
 3. Extract key findings, quotes, and data
-4. Note all source URLs and citations
-5. Gather evidence that directly addresses the research query"""
+4. Include explicit source URLs for every claim, and format as [Source: <title>](<url>)
+5. Gather evidence that directly addresses the research query
+6. End with the phrase "RESEARCH COMPLETE" so teammates know you are done."""
 
     # Use custom prompt from config if available
     custom_prompt = agent_config.get("system_prompt", "")
@@ -209,11 +210,12 @@ def create_writer_agent(config: Dict[str, Any], model_client: OpenAIChatCompleti
 When writing:
 1. Start with an overview/introduction
 2. Present findings in a logical structure
-3. Cite sources inline using [Source: Title/Author]
+3. Cite sources inline using [Source: Title](URL) or [Author, Year](URL)
 4. Synthesize information from multiple sources
 5. Avoid copying text directly - paraphrase and synthesize
-6. Include a references section at the end
+6. Include a references section at the end with URLs
 7. Ensure the response directly answers the original query
+8. End with the phrase "DRAFT COMPLETE" when your draft is ready.
 
 Format your response professionally with clear headings, paragraphs, in-text citations, and a References section at the end."""
 
@@ -308,4 +310,3 @@ def create_research_team(config: Dict[str, Any]) -> RoundRobinGroupChat:
     )
     
     return team
-
