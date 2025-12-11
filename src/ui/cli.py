@@ -16,7 +16,11 @@ import yaml
 import logging
 from dotenv import load_dotenv
 
-from src.autogen_orchestrator import AutoGenOrchestrator
+# Use LangGraph orchestrator (works reliably with explicit workflow control)
+from src.langgraph_orchestrator import LangGraphOrchestrator as Orchestrator
+
+# AutoGen implementation also available (but has execution issues)
+# from src.autogen_orchestrator import AutoGenOrchestrator as Orchestrator
 
 # Load environment variables
 load_dotenv()
@@ -48,11 +52,11 @@ class CLI:
         # Setup logging
         self._setup_logging()
 
-        # Initialize AutoGen orchestrator
+        # Initialize orchestrator (LangGraph by default)
         try:
-            self.orchestrator = AutoGenOrchestrator(self.config)
+            self.orchestrator = Orchestrator(self.config)
             self.logger = logging.getLogger("cli")
-            self.logger.info("AutoGen orchestrator initialized successfully")
+            self.logger.info("Orchestrator initialized successfully")
         except Exception as e:
             self.logger = logging.getLogger("cli")
             self.logger.error(f"Failed to initialize orchestrator: {e}")
@@ -204,10 +208,33 @@ class CLI:
             print(f"  • Messages exchanged: {metadata.get('num_messages', 0)}")
             print(f"  • Sources gathered: {metadata.get('num_sources', 0)}")
             print(f"  • Agents involved: {', '.join(metadata.get('agents_involved', []))}")
+            if metadata.get("last_agent"):
+                print(f"  • Last agent: {metadata.get('last_agent')}")
+            if metadata.get("safety_violations"):
+                print(f"  • Safety violations: {len(metadata.get('safety_violations', []))}")
+            if metadata.get("safety_action"):
+                action = metadata.get("safety_action")
+                sanitized = metadata.get("safety_sanitized", False)
+                status_label = "SANITIZED" if sanitized else "REFUSED"
+                print(f"  • Safety action: {action} ({status_label})")
 
         # Display conversation summary if verbose mode
         if self._should_show_traces():
             self._display_conversation_summary(result.get("conversation_history", []))
+
+        # Safety events
+        safety_events = metadata.get("safety_events", [])
+        if safety_events:
+            print("\n" + "-" * 70)
+            print("🛡️ SAFETY EVENTS")
+            print("-" * 70)
+            for event in safety_events:
+                status = "SAFE" if event.get("safe", True) else "BLOCKED"
+                print(f"  • [{status}] {event.get('type', '').upper()} - {event.get('content_preview', '')}")
+                for violation in event.get("violations", []):
+                    reason = violation.get("reason", violation.get("validator", ""))
+                    category = violation.get("category", violation.get("validator", ""))
+                    print(f"      - {reason} (category: {category}, severity: {violation.get('severity', 'n/a')})")
 
         print("=" * 70 + "\n")
     

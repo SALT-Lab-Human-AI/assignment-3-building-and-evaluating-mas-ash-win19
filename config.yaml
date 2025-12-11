@@ -64,15 +64,15 @@ agents:
 models:
   # Default model for agents (Groq)
   default:
-    provider: "vllm"
-    name: "openai/gpt-oss-20b"
+    provider: "groq"
+    name: "llama-3.3-70b-versatile"
     temperature: 0.7
     max_tokens: 2048
 
   # Judge model for evaluation
   judge:
-    provider: "vllm"
-    name: "openai/gpt-oss-20b"
+    provider: "groq"
+    name: "llama-3.3-70b-versatile"
     temperature: 0.3
     max_tokens: 1024
 

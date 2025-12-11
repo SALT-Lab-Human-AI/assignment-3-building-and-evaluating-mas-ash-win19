@@ -13,11 +13,7 @@ class SafetyManager:
     """
     Manages safety guardrails for the multi-agent system.
 
-    TODO: YOUR CODE HERE
-    - Integrate with Guardrails AI or NeMo Guardrails
-    - Define safety policies
-    - Implement logging of safety events
-    - Handle different violation types with appropriate responses
+    Coordinates input/output guardrails and logs events for UI display.
     """
 
     def __init__(self, config: Dict[str, Any]):
@@ -46,13 +42,15 @@ class SafetyManager:
         # Violation response strategy
         self.on_violation = config.get("on_violation", {})
 
-        # TODO: Initialize guardrail framework
-        # Examples:
-        # from guardrails import Guard
-        # self.guard = Guard(...)
-        # OR
-        # from nemoguardrails import RailsConfig
-        # self.rails = RailsConfig(...)
+        # Instantiate guardrails
+        from src.guardrails.input_guardrail import InputGuardrail
+        from src.guardrails.output_guardrail import OutputGuardrail
+
+        self.input_guardrail = InputGuardrail(config=config)
+        self.output_guardrail = OutputGuardrail(config=config)
+        # Log file configuration
+        logging_config = config.get("logging", {})
+        self.safety_log_file = logging_config.get("safety_log") or config.get("safety_log_file")
 
     def check_input_safety(self, query: str) -> Dict[str, Any]:
         """
@@ -64,41 +62,13 @@ class SafetyManager:
         Returns:
             Dictionary with 'safe' boolean and optional 'violations' list
 
-        TODO: YOUR CODE HERE
-        - Implement guardrail checks
-        - Detect harmful/inappropriate content
-        - Detect off-topic queries
-        - Return detailed violation information
         """
         if not self.enabled:
             return {"safe": True}
 
-        # TODO: Implement actual safety checks
-        # Example using Guardrails AI:
-        # result = self.guard.validate(query)
-        # if result.validation_passed:
-        #     return {"safe": True}
-        # else:
-        #     return {
-        #         "safe": False,
-        #         "violations": result.errors,
-        #         "sanitized_query": result.validated_output
-        #     }
-
-        # Placeholder implementation with simple keyword checks
-        violations = []
-
-        # Check for prohibited keywords (very basic example)
-        prohibited_keywords = ["hack", "attack", "exploit", "bypass"]
-        for keyword in prohibited_keywords:
-            if keyword.lower() in query.lower():
-                violations.append({
-                    "category": "potentially_harmful",
-                    "reason": f"Query contains prohibited keyword: {keyword}",
-                    "severity": "medium"
-                })
-
-        is_safe = len(violations) == 0
+        result = self.input_guardrail.validate(query)
+        violations = result.get("violations", [])
+        is_safe = result.get("valid", True)
 
         # Log safety event
         if not is_safe and self.log_events:
@@ -106,7 +76,8 @@ class SafetyManager:
 
         return {
             "safe": is_safe,
-            "violations": violations
+            "violations": violations,
+            "sanitized_query": result.get("sanitized_input", query)
         }
 
     def check_output_safety(self, response: str) -> Dict[str, Any]:
@@ -119,26 +90,15 @@ class SafetyManager:
         Returns:
             Dictionary with 'safe' boolean and optional 'violations' list
 
-        TODO: YOUR CODE HERE
-        - Implement output guardrail checks
-        - Detect harmful content in responses
-        - Detect potential misinformation
-        - Sanitize or redact unsafe content
         """
         if not self.enabled:
             return {"safe": True, "response": response}
 
-        # TODO: Implement actual output safety checks
-        # Example checks:
-        # - No PII (personal identifiable information)
-        # - No harmful instructions
-        # - Factual consistency
-        # - No bias or offensive language
-
-        violations = []
-
-        # Placeholder implementation
-        is_safe = len(violations) == 0
+        guardrail_result = self.output_guardrail.validate(response)
+        violations = guardrail_result.get("violations", [])
+        is_safe = guardrail_result.get("valid", True)
+        action = "none"
+        sanitized_flag = False
 
         # Log safety event
         if not is_safe and self.log_events:
@@ -147,19 +107,24 @@ class SafetyManager:
         result = {
             "safe": is_safe,
             "violations": violations,
-            "response": response
+            "response": response,
+            "sanitized": False,
+            "action_taken": "none"
         }
 
         # Apply sanitization if configured
         if not is_safe:
             action = self.on_violation.get("action", "refuse")
             if action == "sanitize":
-                result["response"] = self._sanitize_response(response, violations)
+                result["response"] = guardrail_result.get("sanitized_output", response)
+                sanitized_flag = True
             elif action == "refuse":
                 result["response"] = self.on_violation.get(
                     "message",
                     "I cannot provide this response due to safety policies."
                 )
+            result["sanitized"] = sanitized_flag
+            result["action_taken"] = action
 
         return result
 
@@ -167,7 +132,6 @@ class SafetyManager:
         """
         Sanitize response by removing or redacting unsafe content.
 
-        TODO: YOUR CODE HERE Implement sanitization logic
         """
         # Placeholder
         return "[REDACTED] " + response
@@ -200,7 +164,7 @@ class SafetyManager:
         self.logger.warning(f"Safety event: {event_type} - safe={is_safe}")
 
         # Write to safety log file if configured
-        log_file = self.config.get("safety_log_file")
+        log_file = self.safety_log_file
         if log_file and self.log_events:
             try:
                 with open(log_file, "a") as f:

@@ -65,13 +65,13 @@ class SystemEvaluator:
 
     async def evaluate_system(
         self,
-        test_queries_path: str = "data/test_queries.json"
+        test_queries_path: str = "data/example_queries.json"
     ) -> Dict[str, Any]:
         """
         Run full system evaluation.
 
         Args:
-            test_queries_path: Path to test queries JSON file
+        test_queries_path: Path to test queries JSON file
 
         Returns:
             Evaluation results and statistics
@@ -135,9 +135,6 @@ class SystemEvaluator:
         # Run through orchestrator if available
         if self.orchestrator:
             try:
-                # Call orchestrator's process_query method
-                # TODO: YOUR CODE HERE
-                # Need to implement this in their orchestrator
                 response_data = self.orchestrator.process_query(query)
                 
                 # If process_query is async, use:
@@ -165,7 +162,7 @@ class SystemEvaluator:
         evaluation = await self.judge.evaluate(
             query=query,
             response=response_data.get("response", ""),
-            sources=response_data.get("metadata", {}).get("sources", []),
+            sources=response_data.get("metadata", {}).get("citations", []),
             ground_truth=ground_truth
         )
 
@@ -174,7 +171,8 @@ class SystemEvaluator:
             "response": response_data.get("response", ""),
             "evaluation": evaluation,
             "metadata": response_data.get("metadata", {}),
-            "ground_truth": ground_truth
+            "ground_truth": ground_truth,
+            "conversation_history": response_data.get("conversation_history", [])
         }
 
     def _load_test_queries(self, path: str) -> List[Dict[str, Any]]:
@@ -272,10 +270,6 @@ class SystemEvaluator:
         """
         Save evaluation results to file.
 
-        TODO: YOUR CODE HERE
-        - Save detailed results
-        - Generate visualizations
-        - Create summary report
         """
         output_dir = Path("outputs")
         output_dir.mkdir(exist_ok=True)
@@ -309,6 +303,39 @@ class SystemEvaluator:
                 f.write(f"  {criterion}: {score:.3f}\n")
 
         self.logger.info(f"Summary saved to {summary_file}")
+
+        # Export at least one session transcript and final answer artifact
+        successful = [r for r in self.results if "error" not in r]
+        if successful:
+            first = successful[0]
+            slug = self._slugify(first.get("query", "session"))
+            transcript_file = output_dir / f"transcript_{slug}_{timestamp}.json"
+            artifact_file = output_dir / f"final_answer_{slug}_{timestamp}.md"
+
+            transcript_payload = {
+                "query": first.get("query", ""),
+                "conversation_history": first.get("conversation_history", []),
+                "metadata": first.get("metadata", {}),
+                "evaluation": first.get("evaluation", {})
+            }
+            with open(transcript_file, 'w') as f:
+                json.dump(transcript_payload, f, indent=2)
+
+            final_md = f"# Response for: {first.get('query','')}\n\n"
+            final_md += first.get("response", "")
+            final_md += "\n\n---\n\nSources / Citations:\n"
+            for i, cite in enumerate(first.get("metadata", {}).get("citations", []), 1):
+                final_md += f"- [{i}] {cite}\n"
+
+            with open(artifact_file, 'w') as f:
+                f.write(final_md)
+
+            self.logger.info(f"Transcript saved to {transcript_file}")
+            self.logger.info(f"Final answer saved to {artifact_file}")
+
+    def _slugify(self, text: str) -> str:
+        """Create a filesystem-friendly slug."""
+        return "".join(c if c.isalnum() else "_" for c in text)[:40]
 
     def export_for_report(self, output_path: str = "outputs/report_data.json"):
         """
