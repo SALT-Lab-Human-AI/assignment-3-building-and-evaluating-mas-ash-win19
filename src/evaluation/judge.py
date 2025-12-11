@@ -50,8 +50,8 @@ class LLMJudge:
         # Load evaluation criteria from config.yaml (evaluation.criteria)
         # Each criterion has: name, weight, description
         self.criteria = config.get("evaluation", {}).get("criteria", [])
-        # Two perspectives = two judge prompts
-        self.perspectives = ["primary", "safety_audit"]
+        # Independent perspectives = multiple judge prompts
+        self.perspectives = ["primary", "safety_audit", "ground_truth_alignment"]
         
         # Initialize Groq client (similar to what we tried in Lab 5)
         api_key = os.getenv("GROQ_API_KEY")
@@ -171,7 +171,7 @@ class LLMJudge:
             except Exception as e:
                 self.logger.error(f"Error judging criterion {criterion_name} ({perspective}): {e}")
                 heuristic_score, heuristic_reason = self._heuristic_score(
-                    criterion_name, query, response, sources
+                    criterion_name, query, response, sources, ground_truth
                 )
                 perspective_scores.append((heuristic_score, heuristic_reason, "heuristic"))
 
@@ -228,7 +228,8 @@ Score strictly between 0.0 and 1.0:
 """
         perspective_instructions = {
             "primary": "Focus on coverage, evidence use, and clarity for the criterion.",
-            "safety_audit": "Focus on safety, bias, and policy compliance for the criterion."
+            "safety_audit": "Focus on safety, bias, and policy compliance for the criterion.",
+            "ground_truth_alignment": "Focus on factual alignment to provided ground_truth and cited evidence; penalize hallucinations or unsupported claims."
         }
 
         prompt = f"""You are an expert evaluator. Perspective: {perspective_instructions.get(perspective, 'primary')}.
@@ -249,6 +250,8 @@ Response:
             prompt += f"\n\nExpected Response:\n{ground_truth}"
 
         prompt += f"""
+
+When ground_truth is provided, explicitly judge fidelity to it. When sources are listed, check whether claims are supported or appear hallucinated.
 
 {rubric}
 
@@ -308,7 +311,8 @@ Provide your evaluation in the following JSON format:
         criterion_name: str,
         query: str,
         response: str,
-        sources: Optional[List[Dict[str, Any]]]
+        sources: Optional[List[Dict[str, Any]]],
+        ground_truth: Optional[str] = None
     ) -> tuple:
         """
         Heuristic scoring fallback when LLM judge is unavailable.
@@ -325,8 +329,16 @@ Provide your evaluation in the following JSON format:
                 score -= 0.2
             else:
                 score += 0.1
+        if ground_truth:
+            overlap = len(set(ground_truth.lower().split()) & set(response.lower().split()))
+            truth_tokens = len(set(ground_truth.lower().split()))
+            if truth_tokens:
+                if overlap / truth_tokens > 0.3:
+                    score += 0.05
+                else:
+                    score -= 0.05
         score = max(0.0, min(1.0, score))
-        reasoning = "Heuristic: length/source/safety pattern check"
+        reasoning = "Heuristic: length/source/safety/ground-truth pattern check"
         return score, reasoning
 
     def _parse_judgment(self, judgment: str) -> tuple:
